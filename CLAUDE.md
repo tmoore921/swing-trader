@@ -19,6 +19,9 @@ TWELVEDATA_API_KEY=<key> uv run python run_eod.py       --watchlist AAPL,MSFT --
 
 # Data-layer diagnostic — prints "OK — SPY returned N rows" or "FAILED — <raw API reason>"
 TWELVEDATA_API_KEY=<key> uv run python -m src.data_provider SPY
+
+# Email a report (Resend) — prints "OK — email sent ..." or "FAILED — <reason>"
+RESEND_API_KEY=<key> uv run python send_report.py --subject "..." --to you@example.com --body-file /tmp/briefing.txt
 ```
 
 There is no test suite, linter, or build step configured. The `-m src.data_provider <SYMBOL>` self-test is the primary way to verify the data layer end-to-end.
@@ -53,9 +56,12 @@ All OHLCV comes from the **Twelve Data REST API** (`api.twelvedata.com`). Notabl
 - `evaluate.py` — orchestrates the above into one `agent_action` per ticker. Stop defaults to SMA50 (fallback 8% below entry). Fundamentals are deliberately NOT checked here (Twelve Data free tier is price-only) — `fundamentals_unverified: true` signals the agent to verify before buying.
 - `config.py` — all thresholds (risk %, R:R minimums, pivot/extended bands). `load_dotenv()` runs here.
 
+### Reporting (`send_report.py`)
+Standalone CLI (not imported by the analysis pipeline) that emails a plain-text report via the **Resend API** (`api.resend.com`). The routine's final step writes the agent's composed briefing to a file and calls this. Reads `RESEND_API_KEY` inline (same contract as the data key). Without a verified Resend domain it sends from `onboarding@resend.dev` and only to the account owner's email. The routines email on every run (including DEFENSIVE / key-failure) so a missing email is itself a signal.
+
 ## Environment gotchas (these have caused real failures)
 
 - **Pass the API key inline, never via `export` or `.env`.** Each Bash call in the routine is a fresh shell, so `export` doesn't persist, and `printf`-ing a `.env` is fragile (escaped `\n` corrupted the key in practice). Inline `TWELVEDATA_API_KEY=… uv run …` sets it for that one process reliably. `data_provider` also calls `load_dotenv()` as a secondary path, but inline is the contract.
-- **The sandbox must allowlist `api.twelvedata.com`.** The Default cloud environment blocks outbound HTTPS to non-allowlisted hosts. The domain is added under the environment's Network access → Custom (with "include default package managers" checked so PyPI/GitHub still work). If a run reports `Host not in allowlist`, that setting was lost or the change hasn't propagated to a new session.
+- **The sandbox must allowlist every external host.** The Default cloud environment blocks outbound HTTPS to non-allowlisted hosts. Required domains, added under Network access → Custom (with "include default package managers" checked so PyPI/GitHub still work): `api.twelvedata.com` (market data) and `api.resend.com` (email). If a run reports `Host not in allowlist`, that domain is missing or the change hasn't propagated to a new session.
 - **A false `DEFENSIVE` usually means the key didn't reach Python.** If a briefing shows "SPY/QQQ data unavailable" alongside DEFENSIVE/0-6, the key was missing or invalid — re-run the Step 1 diagnostic before trusting any stance.
 - **Don't put the API key in the environment's "Environment variables" box** — that field is documented as visible to anyone using the environment.
