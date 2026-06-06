@@ -7,27 +7,35 @@ so the rest of the codebase is provider-agnostic.
 """
 
 import os
+import sys
 import time
 import requests
 import pandas as pd
 from dotenv import load_dotenv
 
-# Load .env so the API key is picked up even when the caller didn't export it
-# into the current shell (each Bash call in the routine is a fresh shell).
+# Load .env if present (secondary path). The reliable path is an inline env var
+# on the same command, e.g. `TWELVEDATA_API_KEY=... uv run python run_premarket.py`.
 load_dotenv()
 
-API_KEY = os.getenv("TWELVEDATA_API_KEY", "demo")
 BASE_URL = "https://api.twelvedata.com"
 
 # Stay under the 8 req/min free-tier limit (≈7.5s minimum spacing → use 8s).
 _MIN_INTERVAL = float(os.getenv("TWELVEDATA_MIN_INTERVAL", "8"))
 _last_call_ts = 0.0
 
+# Last raw API error, for diagnostics
+last_error: str | None = None
+
 # Symbols that need remapping for Twelve Data
 SYMBOL_MAP = {
     "^VIX": "VIX",
     "VIX": "VIX",
 }
+
+
+def _api_key() -> str:
+    """Read the key at call time so callers can set it after import."""
+    return os.getenv("TWELVEDATA_API_KEY", "demo")
 
 
 def _throttle():
@@ -42,7 +50,9 @@ def get_history(ticker: str, outputsize: int = 500) -> pd.DataFrame | None:
     """Fetch daily OHLCV history. Returns ascending DataFrame or None on failure.
 
     outputsize=500 ≈ 2 trading years, enough for the 200-day SMA in Stage 2.
+    On failure, the raw API message is stored in module-level `last_error`.
     """
+    global last_error
     symbol = SYMBOL_MAP.get(ticker, ticker)
     _throttle()
     try:
@@ -53,12 +63,14 @@ def get_history(ticker: str, outputsize: int = 500) -> pd.DataFrame | None:
                 "interval": "1day",
                 "outputsize": outputsize,
                 "order": "ASC",
-                "apikey": API_KEY,
+                "apikey": _api_key(),
             },
             timeout=30,
         )
         data = resp.json()
         if data.get("status") != "ok" or "values" not in data:
+            # Twelve Data returns {"code":..., "message":..., "status":"error"} on failure
+            last_error = f"{ticker}: HTTP {resp.status_code} | {data.get('code')} | {data.get('message') or data}"
             return None
 
         df = pd.DataFrame(data["values"])
@@ -78,7 +90,8 @@ def get_history(ticker: str, outputsize: int = 500) -> pd.DataFrame | None:
         df["datetime"] = pd.to_datetime(df["datetime"])
         df = df.set_index("datetime").sort_index()
         return df[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"])
-    except Exception:
+    except Exception as e:
+        last_error = f"{ticker}: request failed — {e}"
         return None
 
 
@@ -91,4 +104,19 @@ def latest_close(ticker: str) -> float | None:
 
 
 def api_key_configured() -> bool:
-    return API_KEY not in ("", "demo", None)
+    return _api_key() not in ("", "demo", None)
+
+
+if __name__ == "__main__":
+    # Diagnostic self-test: `python -m src.data_provider [SYMBOL]`
+    # Prints the raw outcome so we can tell a bad key from an unreachable API.
+    sym = sys.argv[1] if len(sys.argv) > 1 else "SPY"
+    key = _api_key()
+    masked = (key[:4] + "…" + key[-4:]) if key and key != "demo" else key
+    print(f"key in use: {masked}")
+    df = get_history(sym, outputsize=10)
+    if df is not None and not df.empty:
+        print(f"OK — {sym} returned {len(df)} rows, last close {float(df['Close'].iloc[-1])}")
+    else:
+        print(f"FAILED — {sym} returned no data")
+        print(f"reason: {last_error}")
