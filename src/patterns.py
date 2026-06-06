@@ -5,17 +5,23 @@ Cup & Handle requires longer visual inspection — flagged for agent review.
 Priority order (highest conviction first): VCP > Bull Flag > Flat Base > Pullback to 20 EMA.
 """
 
-import yfinance as yf
+import pandas as pd
 import numpy as np
 from config import EXTENDED_ABOVE_PIVOT_PCT, BUY_SIGNAL_THRESHOLD_PCT
+from src.data_provider import get_history
 
 PATTERN_PRIORITY = ["VCP", "Bull Flag", "Flat Base", "Pullback to 20 EMA"]
 
 
-def detect_pattern(ticker: str) -> dict:
-    """Return the highest-conviction pattern found, or NO SETUP."""
+def detect_pattern(ticker: str, df: pd.DataFrame | None = None) -> dict:
+    """Return the highest-conviction pattern found, or NO SETUP.
+
+    Accepts a pre-fetched DataFrame to share one data fetch per ticker.
+    """
     try:
-        hist = yf.Ticker(ticker).history(period="1y")
+        hist = df if df is not None else get_history(ticker, outputsize=300)
+        if hist is None:
+            return {"pattern": "DATA_UNAVAILABLE", "pivot": None, "extended": False}
         if len(hist) < 60:
             return {"pattern": "INSUFFICIENT_DATA", "pivot": None, "extended": False}
 

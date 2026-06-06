@@ -8,21 +8,10 @@ RISK_PER_TRADE_PCT = 0.01
 MAX_PORTFOLIO_RISK_PCT = 0.06
 RISK_PER_TRADE = ACCOUNT_SIZE * RISK_PER_TRADE_PCT  # $5
 
+# VIX stance thresholds
 VIX_AGGRESSIVE_MAX = 20
 VIX_SELECTIVE_MAX = 25
 VIX_DEFENSIVE_MAX = 30
-
-SECTOR_ETFS = ["XLK", "XLE", "XLF", "XLV", "XLI", "XLY", "XLC", "XLB", "XLRE", "XLU"]
-SECTOR_NAMES = {
-    "XLK": "Technology", "XLE": "Energy", "XLF": "Financials",
-    "XLV": "Health Care", "XLI": "Industrials", "XLY": "Consumer Discretionary",
-    "XLC": "Communication", "XLB": "Materials", "XLRE": "Real Estate", "XLU": "Utilities",
-}
-
-MIN_PRICE = 15.0
-MIN_AVG_VOLUME = 500_000
-SCREENER_UNIVERSE_SIZE = 60   # top N by RS to run full checks on
-SCREENER_TOP_CANDIDATES = 5   # final candidates to return
 
 # Stage 2
 MIN_ABOVE_52W_LOW_PCT = 0.30

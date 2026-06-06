@@ -1,14 +1,20 @@
-"""Stage 2 trend template: all 5 conditions must pass."""
+"""Stage 2 trend template: all 5 conditions must pass.
 
-import yfinance as yf
+Accepts a pre-fetched DataFrame so callers can share one data fetch per ticker.
+"""
+
+import pandas as pd
+from src.data_provider import get_history
 
 
-def check_stage2(ticker: str) -> dict:
+def check_stage2(ticker: str, df: pd.DataFrame | None = None) -> dict:
     """Return pass/fail for each of the 5 Stage 2 conditions."""
     try:
-        hist = yf.Ticker(ticker).history(period="2y")
+        hist = df if df is not None else get_history(ticker, outputsize=500)
+        if hist is None:
+            return {"ticker": ticker, "passes": False, "reason": "data_unavailable", "data_unavailable": True}
         if len(hist) < 210:
-            return {"passes": False, "reason": "insufficient_history", "ticker": ticker}
+            return {"ticker": ticker, "passes": False, "reason": "insufficient_history"}
 
         close = hist["Close"]
         current = float(close.iloc[-1])

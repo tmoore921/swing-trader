@@ -1,6 +1,8 @@
 """Position sizing and R:R calculations."""
 
+import pandas as pd
 from config import ACCOUNT_SIZE, RISK_PER_TRADE, MIN_RR, PREFERRED_RR, MAX_POSITION_PCT
+from src.data_provider import get_history
 
 
 def calculate_position(
@@ -40,15 +42,17 @@ def calculate_position(
     }
 
 
-def estimate_targets(ticker: str, entry: float, stop: float) -> tuple[float | None, float | None]:
+def estimate_targets(
+    ticker: str, entry: float, stop: float, df: pd.DataFrame | None = None
+) -> tuple[float | None, float | None]:
     """Estimate T1/T2 from recent swing highs as a starting point for agent review."""
     try:
-        import yfinance as yf
-        hist = yf.Ticker(ticker).history(period="1y")
+        hist = df if df is not None else get_history(ticker, outputsize=300)
+        if hist is None:
+            raise ValueError("no data")
         high = hist["High"].astype(float)
-        current = float(hist["Close"].iloc[-1])
 
-        # T1: nearest significant resistance above current price
+        # T1: nearest significant resistance above entry
         recent_highs = high.iloc[-60:].values
         above = sorted([h for h in recent_highs if h > entry * 1.02])
         t1 = float(above[0]) if above else round(entry + (entry - stop) * 2, 2)
@@ -58,8 +62,7 @@ def estimate_targets(ticker: str, entry: float, stop: float) -> tuple[float | No
         if t2 <= t1:
             t2 = round(t1 + (t1 - entry), 2)
 
-        return t1, t2
+        return round(t1, 2), t2
     except Exception:
-        # Fallback: synthetic targets at 2R and 3R
         risk = entry - stop
         return round(entry + risk * 2, 2), round(entry + risk * 3, 2)

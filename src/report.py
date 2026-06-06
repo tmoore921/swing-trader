@@ -1,85 +1,93 @@
 """Format analysis output as JSON and human-readable text."""
 
-import json
 from datetime import datetime
 
 
 def build_json_output(
     mode: str,
     regime: dict,
-    sectors: list[dict],
     candidates: list[dict],
     watchlist_tickers: list[str],
+    new_scan_tickers: list[str],
 ) -> dict:
     return {
         "generated_at": datetime.now().isoformat(),
         "mode": mode,
         "market_regime": regime,
-        "leading_sectors": sectors,
         "candidates": candidates,
-        "watchlist_tickers_to_evaluate": watchlist_tickers,
+        "watchlist_tickers_evaluated": watchlist_tickers,
+        "new_scan_tickers_evaluated": new_scan_tickers,
         "instructions_for_agent": _build_agent_instructions(regime, candidates),
     }
 
 
-def _build_agent_instructions(regime: dict, candidates: list[dict]) -> dict:
-    stance = regime.get("stance", "UNKNOWN")
+def _is_defensive(regime: dict) -> bool:
+    return regime.get("stance") in ("DEFENSIVE", "HALT")
 
-    if stance in ("DEFENSIVE", "HALT"):
+
+def _build_agent_instructions(regime: dict, candidates: list[dict]) -> dict:
+    if _is_defensive(regime):
         return {
             "skip_orders": True,
-            "reason": f"Market stance is {stance} — no new long entries",
+            "reason": f"Market stance is {regime.get('stance')} — no new long entries",
         }
 
     orders = [c for c in candidates if c.get("agent_action") == "PLACE_ORDER"]
     watchlist_add = [c for c in candidates if c.get("agent_action") == "ADD_TO_WATCHLIST"]
     skip = [c for c in candidates if c.get("agent_action") == "SKIP"]
+    no_data = [c for c in candidates if c.get("agent_action") == "VERIFY_VIA_WEBSEARCH"]
 
     return {
         "skip_orders": False,
+        "verify_fundamentals_before_ordering": True,
         "place_orders": [
             {
                 "ticker": c["ticker"],
+                "from_watchlist": c.get("from_watchlist", False),
                 "limit_buy_price": c["risk"]["entry"],
                 "stop_loss_price": c["risk"]["stop"],
                 "take_profit_price": c["risk"]["t1"],
                 "shares": c["risk"]["shares"],
-                "order_type": "GFD_limit_buy",
-                "note": "review_equity_order REQUIRED before place_equity_order",
+                "rr_t1": c["risk"].get("rr_t1"),
+                "order_type": "limit_buy",
+                "note": "Verify fundamentals + earnings via web search, then review_equity_order BEFORE place_equity_order",
             }
             for c in orders
             if c.get("risk") and c["risk"].get("valid")
         ],
         "add_to_watchlist": [c["ticker"] for c in watchlist_add],
         "skip": [{"ticker": c["ticker"], "reason": c.get("skip_reason", "")} for c in skip],
+        "verify_via_websearch": [c["ticker"] for c in no_data],
     }
 
 
 def print_briefing(data: dict) -> None:
-    """Print a human-readable summary to stdout."""
     regime = data["market_regime"]
+    spy = regime.get("spy") or {}
+    qqq = regime.get("qqq") or {}
     print(f"\n{'='*60}")
     print(f"SWING TRADER — {data['mode'].upper()} ANALYSIS")
     print(f"Generated: {data['generated_at'][:19]}")
     print(f"{'='*60}")
     print(f"\nMARKET STANCE: {regime['stance']}")
-    print(f"VIX: {regime['vix']} | SPY vs 50SMA: {'above' if regime['spy']['above_sma50'] else 'below'} | QQQ vs 50SMA: {'above' if regime['qqq']['above_sma50'] else 'below'}")
+    print(f"VIX: {regime.get('vix', 'N/A')} | conditions met: {regime.get('conditions_met')}/6")
+    print(f"SPY vs 50SMA: {'above' if spy.get('above_sma50') else 'below/NA'} | "
+          f"QQQ vs 50SMA: {'above' if qqq.get('above_sma50') else 'below/NA'}")
+    for note in regime.get("notes", []):
+        print(f"  ⚠ {note}")
 
-    print(f"\nLEADING SECTORS:")
-    for s in data.get("leading_sectors", []):
-        print(f"  {s['ticker']} ({s['name']}): {s['return_pct']:+.1f}% | vs SPY: {s['vs_spy_pct']:+.1f}%")
-
-    print(f"\nCANDIDATES ({len(data['candidates'])} screened):")
+    print(f"\nCANDIDATES ({len(data['candidates'])} evaluated):")
     for c in data["candidates"]:
         action = c.get("agent_action", "?")
+        src = "watchlist" if c.get("from_watchlist") else "new"
         pattern = c.get("pattern", {})
         risk = c.get("risk", {})
-        print(f"\n  {c['ticker']} [{action}]")
+        print(f"\n  {c['ticker']} [{action}] ({src})")
         print(f"    Pattern: {pattern.get('pattern', 'N/A')} | Pivot: ${pattern.get('pivot', 'N/A')} | Extended: {pattern.get('extended', False)}")
         if risk.get("valid"):
             print(f"    Entry: ${risk['entry']} | Stop: ${risk['stop']} | T1: ${risk.get('t1', 'N/A')} | Shares: {risk['shares']} | R:R: {risk.get('rr_t1', 'N/A')}")
-        fund = c.get("fundamentals", {})
-        print(f"    Fundamentals: {fund.get('quality', 'N/A')} | EPS: {fund.get('eps_growth_pct', 'N/A')}% | Rev: {fund.get('rev_growth_pct', 'N/A')}% | RS vs SPY: {fund.get('rs_vs_spy_6m', 'N/A')}%")
+        if c.get("skip_reason"):
+            print(f"    Skip: {c['skip_reason']}")
 
     instr = data.get("instructions_for_agent", {})
     if instr.get("skip_orders"):
@@ -87,9 +95,10 @@ def print_briefing(data: dict) -> None:
     else:
         orders = instr.get("place_orders", [])
         watchlist = instr.get("add_to_watchlist", [])
-        print(f"\nORDERS TO PLACE: {len(orders)}")
+        print(f"\nORDERS TO PLACE (after agent verifies fundamentals): {len(orders)}")
         for o in orders:
-            print(f"  BUY {o['shares']} shares {o['ticker']} limit @ ${o['limit_buy_price']} | Stop: ${o['stop_loss_price']} | TP: ${o['take_profit_price']}")
+            tag = "watchlist" if o.get("from_watchlist") else "new"
+            print(f"  BUY {o['shares']} {o['ticker']} limit @ ${o['limit_buy_price']} | Stop: ${o['stop_loss_price']} | TP: ${o['take_profit_price']} ({tag})")
         print(f"WATCHLIST TO ADD: {', '.join(watchlist) if watchlist else 'none'}")
 
     print(f"\n{'='*60}\n")
