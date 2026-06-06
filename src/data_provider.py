@@ -23,6 +23,13 @@ BASE_URL = "https://api.twelvedata.com"
 _MIN_INTERVAL = float(os.getenv("TWELVEDATA_MIN_INTERVAL", "8"))
 _last_call_ts = 0.0
 
+# Transient-failure retry policy. A single network blip should not blank a whole
+# trading day (a failed SPY/QQQ fetch forces the entire run DEFENSIVE).
+_MAX_RETRIES = int(os.getenv("TWELVEDATA_MAX_RETRIES", "3"))
+_RETRY_BACKOFF = float(os.getenv("TWELVEDATA_RETRY_BACKOFF", "2"))  # seconds, doubles each try
+# Twelve Data error codes that are worth retrying (rate limit / server-side).
+_TRANSIENT_CODES = {429, 500, 502, 503, 504}
+
 # Last raw API error, for diagnostics
 last_error: str | None = None
 
@@ -54,45 +61,58 @@ def get_history(ticker: str, outputsize: int = 500) -> pd.DataFrame | None:
     """
     global last_error
     symbol = SYMBOL_MAP.get(ticker, ticker)
-    _throttle()
-    try:
-        resp = requests.get(
-            f"{BASE_URL}/time_series",
-            params={
-                "symbol": symbol,
-                "interval": "1day",
-                "outputsize": outputsize,
-                "order": "ASC",
-                "apikey": _api_key(),
-            },
-            timeout=30,
-        )
-        data = resp.json()
-        if data.get("status") != "ok" or "values" not in data:
-            # Twelve Data returns {"code":..., "message":..., "status":"error"} on failure
-            last_error = f"{ticker}: HTTP {resp.status_code} | {data.get('code')} | {data.get('message') or data}"
+
+    for attempt in range(_MAX_RETRIES):
+        _throttle()
+        try:
+            resp = requests.get(
+                f"{BASE_URL}/time_series",
+                params={
+                    "symbol": symbol,
+                    "interval": "1day",
+                    "outputsize": outputsize,
+                    "order": "ASC",
+                    "apikey": _api_key(),
+                },
+                timeout=30,
+            )
+            data = resp.json()
+            if data.get("status") != "ok" or "values" not in data:
+                # Twelve Data returns {"code":..., "message":..., "status":"error"} on failure
+                code = data.get("code")
+                last_error = f"{ticker}: HTTP {resp.status_code} | {code} | {data.get('message') or data}"
+                # Retry only transient (rate-limit / server-side) errors; a bad
+                # symbol or bad key will never succeed on retry.
+                if code in _TRANSIENT_CODES and attempt < _MAX_RETRIES - 1:
+                    time.sleep(_RETRY_BACKOFF * (2 ** attempt))
+                    continue
+                return None
+
+            df = pd.DataFrame(data["values"])
+            if df.empty:
+                return None
+
+            rename = {
+                "open": "Open", "high": "High", "low": "Low",
+                "close": "Close", "volume": "Volume",
+            }
+            for src, dst in rename.items():
+                if src in df.columns:
+                    df[dst] = pd.to_numeric(df[src], errors="coerce")
+                else:
+                    df[dst] = pd.NA
+
+            df["datetime"] = pd.to_datetime(df["datetime"])
+            df = df.set_index("datetime").sort_index()
+            return df[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"])
+        except Exception as e:
+            # Network-level failure — always transient, retry with backoff.
+            last_error = f"{ticker}: request failed — {e}"
+            if attempt < _MAX_RETRIES - 1:
+                time.sleep(_RETRY_BACKOFF * (2 ** attempt))
+                continue
             return None
-
-        df = pd.DataFrame(data["values"])
-        if df.empty:
-            return None
-
-        rename = {
-            "open": "Open", "high": "High", "low": "Low",
-            "close": "Close", "volume": "Volume",
-        }
-        for src, dst in rename.items():
-            if src in df.columns:
-                df[dst] = pd.to_numeric(df[src], errors="coerce")
-            else:
-                df[dst] = pd.NA
-
-        df["datetime"] = pd.to_datetime(df["datetime"])
-        df = df.set_index("datetime").sort_index()
-        return df[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"])
-    except Exception as e:
-        last_error = f"{ticker}: request failed — {e}"
-        return None
+    return None
 
 
 def latest_close(ticker: str) -> float | None:

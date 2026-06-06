@@ -9,3 +9,7 @@ dist/
 output/
 *.json
 !.env.example
+
+# Trade journal — personal record, not for version control
+journal/
+*.jsonl

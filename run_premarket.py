@@ -11,75 +11,43 @@ Usage:
     uv run python run_premarket.py \
         --watchlist AAPL,MSFT \
         --new NVDA,AVGO,CRWD \
+        --cash 480.50 \
         --output /tmp/swing_premarket.json
 
---watchlist : tickers already on the Robinhood "Swing Candidates" watchlist
---new       : fresh tickers the agent found via web search (used to broaden,
-              especially when the watchlist is empty)
+--watchlist     : tickers already on the Robinhood "Swing Candidates" watchlist
+--new           : fresh tickers the agent found via web search (used to broaden)
+--cash          : Robinhood buying power (agent passes from get_accounts) so sizing
+                  and the portfolio cash cap reflect reality. Optional.
+--existing-risk : open dollar-risk already in the book (sum of (entry-stop)*shares
+                  over current positions) so new orders respect the 6% heat cap.
 """
 
-import sys
-import json
 import argparse
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.market_regime import check_market_regime
-from src.evaluate import evaluate_ticker
-from src.report import build_json_output, print_briefing
-
-
-def _parse_tickers(raw: str) -> list[str]:
-    return [t.strip().upper() for t in raw.split(",") if t.strip()]
+from src.pipeline import run_analysis, parse_tickers
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--watchlist", default="", help="Tickers from the Robinhood watchlist")
     parser.add_argument("--new", default="", help="Fresh tickers from agent web search")
+    parser.add_argument("--cash", type=float, default=None, help="Available buying power")
+    parser.add_argument("--existing-risk", type=float, default=0.0, help="Open dollar-risk in book")
     parser.add_argument("--output", default="/tmp/swing_premarket.json")
     args = parser.parse_args()
 
-    watchlist = _parse_tickers(args.watchlist)
-    new_scan = _parse_tickers(args.new)
-
-    print("Checking market regime...")
-    regime = check_market_regime()
-    print(f"  Stance: {regime['stance']} | VIX: {regime.get('vix')}")
-
-    if regime["stance"] in ("DEFENSIVE", "HALT"):
-        data = build_json_output("premarket", regime, [], watchlist, new_scan)
-        _write_and_print(data, args.output)
-        return
-
-    # Watchlist-first: evaluate carryover names, then broaden with new finds.
-    candidates = []
-    seen = set()
-    for ticker in watchlist:
-        if ticker in seen:
-            continue
-        seen.add(ticker)
-        print(f"  [watchlist] {ticker}...")
-        candidates.append(evaluate_ticker(ticker, from_watchlist=True))
-
-    for ticker in new_scan:
-        if ticker in seen:
-            continue
-        seen.add(ticker)
-        print(f"  [new] {ticker}...")
-        candidates.append(evaluate_ticker(ticker, from_watchlist=False))
-
-    data = build_json_output("premarket", regime, candidates, watchlist, new_scan)
-    _write_and_print(data, args.output)
-
-
-def _write_and_print(data: dict, output_path: str):
-    print_briefing(data)
-    path = Path(output_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, default=str))
-    print(f"JSON output written to: {output_path}")
+    run_analysis(
+        mode="premarket",
+        watchlist=parse_tickers(args.watchlist),
+        new_scan=parse_tickers(args.new),
+        output_path=args.output,
+        cash_available=args.cash,
+        existing_risk=args.existing_risk,
+    )
 
 
 if __name__ == "__main__":
