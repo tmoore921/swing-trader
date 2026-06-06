@@ -10,6 +10,11 @@ import os
 import time
 import requests
 import pandas as pd
+from dotenv import load_dotenv
+
+# Load .env so the API key is picked up even when the caller didn't export it
+# into the current shell (each Bash call in the routine is a fresh shell).
+load_dotenv()
 
 API_KEY = os.getenv("TWELVEDATA_API_KEY", "demo")
 BASE_URL = "https://api.twelvedata.com"
