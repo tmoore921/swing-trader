@@ -5,6 +5,7 @@ Accepts a pre-fetched DataFrame so callers can share one data fetch per ticker.
 
 import pandas as pd
 from src.data_provider import get_history
+from config import NEAR_52W_HIGH_PCT
 
 
 def check_stage2(ticker: str, df: pd.DataFrame | None = None) -> dict:
@@ -51,7 +52,7 @@ def check_stage2(ticker: str, df: pd.DataFrame | None = None) -> dict:
             "low_52w": round(low_52w, 2),
             "high_52w": round(high_52w, 2),
             "pct_above_52w_low": round((current / low_52w - 1) * 100, 1),
-            "within_25pct_of_52w_high": current >= high_52w * 0.75,
+            "within_25pct_of_52w_high": current >= high_52w * (1 - NEAR_52W_HIGH_PCT),
         }
     except Exception as e:
         return {"ticker": ticker, "passes": False, "reason": str(e)}

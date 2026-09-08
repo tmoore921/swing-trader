@@ -40,8 +40,16 @@ with the raw reason. A data outage is not a market signal.
      gains (e.g. to a recent swing low or below a key moving average). Never lower
      a stop.
    - **Time/health stop:** exit names that have stalled or broken their uptrend.
-4. Compute `EXISTING_RISK` = Σ `(avg_cost − stop_price) × shares` across open
-   positions (0 where already at/above stop). Feeds the heat cap in Step 5.
+4. **Open option positions:** `get_option_positions` → for each long call, manage
+   by the *underlying's* technical levels, not the option: if the stock has broken
+   the position's stop / lost its uptrend, **close the call** (`get_option_quotes`
+   → `review_option_order` → `place_option_order` sell-to-close); if the stock has
+   hit its first target and you haven't trimmed, **sell ~half the contracts**. A
+   long call's max loss is its premium — add remaining open premium to
+   `EXISTING_RISK`.
+5. Compute `EXISTING_RISK` = Σ `(avg_cost − stop_price) × shares` across open
+   share positions (0 where already at/above stop) **plus** the open option
+   premium from step 4. Feeds the heat cap in Step 5.
 
 ## Step 3 — Risk guard / kill-switch
 `get_portfolio` for total equity. If equity is down **>10% from its recent
@@ -65,7 +73,7 @@ TWELVEDATA_API_KEY={{TWELVEDATA_API_KEY}} uv run python run_eod.py \
   --output /tmp/swing_eod.json
 ```
 Read `/tmp/swing_eod.json`. Sizing (clamped to cash & 20% max), RS ranking, the
-volume / 52-week-high / R:R gates, and the 6% heat cap are already applied.
+volume / 52-week-high / R:R gates, and the 8% heat cap are already applied.
 
 > Note: the EOD bar is intraday/incomplete at 3:30 PM, so volume-based fields are
 > slightly understated. Treat borderline volume calls conservatively.
@@ -96,10 +104,32 @@ For each order object, in listed (RS-ranked) order:
 Then add `instructions_for_agent.add_to_watchlist` tickers to "Swing Candidates"
 (`add_to_watchlist`), and note `portfolio.orders_demoted` in the briefing.
 
+## Step 7b — Options screening & execution
+`instructions_for_agent.options_candidates` lists defined-risk **long-call**
+blueprints for the same setups (also on each `place_orders[*]` as
+`options_alternative`). Python emits only the structure; you price the live chain.
+A call is the leveraged, defined-risk way to get exposure to a higher-priced
+leader this ~$500 account can't buy meaningful shares of. **Per ticker: shares OR
+the call, not both.** Same fundamentals + earnings gates as shares apply first.
+
+For each play you act on:
+1. `get_option_chains` → filter to the play's `expiry` window (target ~`target_dte`,
+   30–60 DTE).
+2. Pick the **call** nearest `strike.target_delta` (~0.65) / `strike.target_strike`
+   (the pivot) — slightly ITM.
+3. `get_option_quotes` → apply `liquidity_gate` (skip wide spreads / near-zero OI).
+4. Size contracts so total premium ≤ `max_premium_dollars` and ≤ `CASH`; skip if
+   one contract already exceeds budget.
+5. `review_option_order` **before** `place_option_order` (buy-to-open).
+6. Manage it in the next EOD Step 2: close on the underlying stop break, trim at
+   the underlying's first target. Premium paid counts as risk.
+
 ## Step 8 — Report (always, even on failure)
-Plain-text briefing: stance + VIX, exits/trims/trailing-stops done, new orders
-placed (ticker, shares, limit, stop), watchlist changes, cash remaining, and any
-failures/skips with reasons. Write to `/tmp/briefing.txt`, then:
+Plain-text briefing: stance + VIX, exits/trims/trailing-stops done (shares **and**
+options), new share orders placed (ticker, shares, limit, stop), options trades
+placed (ticker, expiry, strike, contracts, premium, exit-on-stop level), watchlist
+changes, cash remaining, and any failures/skips with reasons. Write to
+`/tmp/briefing.txt`, then:
 ```
 RESEND_API_KEY={{RESEND_API_KEY}} uv run python send_report.py \
   --subject "End-of-Day — <STANCE> · <N> orders · <M> watchlist" \

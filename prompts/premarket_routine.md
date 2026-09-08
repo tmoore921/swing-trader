@@ -47,9 +47,18 @@ already hold is unprotected.
      cost). **A held position without a stop is the #1 thing to fix.**
    - If the position is already below its stop (gapped through overnight), exit
      at market and note it.
-5. Compute `EXISTING_RISK` = Σ over open positions of
+5. **Open option positions:** `get_option_positions` → for each long call, check
+   the underlying against the call's exit level. If the underlying has broken the
+   stop the call was opened against, close the call (`review_option_order` →
+   `place_option_order`, sell-to-close) — a long call is managed by the *stock's*
+   technical levels, not by expiry. Also flag any call inside ~10 DTE: theta decay
+   accelerates and the position should be closed or rolled rather than held to
+   expiration.
+6. Compute `EXISTING_RISK` = Σ over open positions of
    `(avg_cost − stop_price) × shares` (use 0 for any position already at/above
-   its stop). This feeds the portfolio-heat cap so new orders don't stack risk.
+   its stop), **plus the full premium paid for every open long call** (a call's
+   max loss is its premium). This feeds the portfolio-heat cap so new orders don't
+   stack risk.
 
 ## Step 3 — Risk guard / kill-switch
 - `get_portfolio` for total equity. If equity has dropped more than **10% from
@@ -76,7 +85,7 @@ TWELVEDATA_API_KEY={{TWELVEDATA_API_KEY}} uv run python run_premarket.py \
 ```
 Then read `/tmp/swing_premarket.json`. The script has already applied position
 sizing (clamped to cash & 20% max), relative-strength ranking, the volume /
-52-week-high / R:R gates, and the 6% portfolio-heat cap.
+52-week-high / R:R gates, and the 8% portfolio-heat cap.
 
 ## Step 6 — Honor the stance
 - If `market_regime.stance` is `DEFENSIVE` or `HALT`, or
@@ -109,11 +118,36 @@ Then process `instructions_for_agent.add_to_watchlist`: add those tickers to the
 "Swing Candidates" watchlist (`add_to_watchlist`). Note `portfolio.orders_demoted`
 (orders bumped to watchlist by the heat cap) in the briefing.
 
+## Step 7b — Options screening & execution
+`instructions_for_agent.options_candidates` lists defined-risk **long-call**
+blueprints for the same setups (each `place_orders[*]` also carries
+`options_alternative`). Python only emits the *structure* — you fetch the live
+chain and price it. Options are most useful when a higher-priced leader's share
+order is too small to matter for this ~$500 account; a call gives leverage with
+defined risk. **For a given ticker, take the shares OR the call, never both.**
+
+For each options play you choose to act on (same fundamentals + earnings gates as
+shares apply first):
+1. `get_option_chains` for the ticker → filter to an expiration in the play's
+   `expiry` window (`min_dte`..`max_dte`, target ~`target_dte`).
+2. Pick the **call** nearest `strike.target_delta` (~0.65) / `strike.target_strike`
+   (the breakout pivot) — slightly ITM.
+3. `get_option_quotes` to price it. Apply `liquidity_gate`: skip if the bid/ask
+   spread exceeds `max_bid_ask_spread_pct_of_mid` or open interest/volume is
+   near zero.
+4. Size contracts so total premium ≤ `max_premium_dollars` (and ≤ `CASH`); if even
+   one contract exceeds the budget, skip and note it.
+5. `review_option_order` **before** `place_option_order` (buy-to-open call).
+6. **Exit by the underlying, not expiry:** plan to close the call if the stock
+   breaks `underlying_stop_ref`. Count the premium paid as risk in next run's
+   `EXISTING_RISK` (a long call's max loss is the premium).
+
 ## Step 8 — Report (always, even on failure)
 Compose a plain-text execution briefing covering: stance + VIX, positions
-managed / stops placed, orders actually placed (ticker, shares, limit, stop),
-watchlist changes, cash remaining, and any failures or skips (with reasons,
-e.g. earnings-gated). Write it to `/tmp/briefing.txt`, then:
+managed / stops placed, **share** orders placed (ticker, shares, limit, stop),
+**options** trades placed (ticker, expiry, strike, contracts, premium, exit-on-
+stop level), watchlist changes, cash remaining, and any failures or skips (with
+reasons, e.g. earnings-gated). Write it to `/tmp/briefing.txt`, then:
 ```
 RESEND_API_KEY={{RESEND_API_KEY}} uv run python send_report.py \
   --subject "Pre-Market — <STANCE> · <N> orders · <M> watchlist" \

@@ -12,7 +12,18 @@ from src.stage2 import check_stage2
 from src.patterns import detect_pattern
 from src.risk_engine import calculate_position, estimate_targets, atr_stop
 from src.rs import compute_rs
-from config import BUY_SIGNAL_THRESHOLD_PCT, MIN_PRICE, MIN_AVG_DOLLAR_VOLUME
+from src.options import build_options_play
+from config import (
+    BUY_SIGNAL_THRESHOLD_PCT,
+    BUY_ZONE_BELOW_PIVOT_PCT,
+    REQUIRE_VOLUME_CONFIRMATION,
+    REQUIRE_NEAR_52W_HIGH,
+    NEAR_52W_HIGH_PCT,
+    MIN_RR,
+    MIN_PRICE,
+    MIN_AVG_DOLLAR_VOLUME,
+    MAX_STOP_DISTANCE_PCT,
+)
 
 
 def _avg_dollar_volume(hist: pd.DataFrame, days: int = 20) -> float:
@@ -69,6 +80,7 @@ def evaluate_ticker(
     pattern = detect_pattern(ticker, df=hist)
     entry = pattern.get("pivot")
     risk = {}
+    options_play = None
     action = "SKIP"
     skip_reason = ""
 
@@ -80,6 +92,11 @@ def evaluate_ticker(
         structural = sma50 if (sma50 and sma50 < entry) else entry * 0.92
         a_stop = atr_stop(entry, hist)
         stop = min(structural, a_stop) if a_stop else structural
+        # ...but not arbitrarily wide. An unbounded "widest of the two" stop hit
+        # 17% below entry on live runs, which inflates risk-per-share and crushes
+        # R:R even when the setup is clean. Past MAX_STOP_DISTANCE_PCT the trade
+        # is too loose for this account size, so clamp rather than skip.
+        stop = max(stop, entry * (1 - MAX_STOP_DISTANCE_PCT))
 
         t1, t2 = estimate_targets(ticker, entry, stop, df=hist)
         risk = calculate_position(
@@ -93,28 +110,39 @@ def evaluate_ticker(
         volume_ok = bool(pattern.get("volume_confirmation"))
         near_high = bool(stage2.get("within_25pct_of_52w_high"))
 
+        # The order is a LIMIT buy AT the pivot, so it can be queued while price is
+        # within BUY_ZONE_BELOW_PIVOT_PCT below the pivot (it fills on the breakout)
+        # and up to BUY_SIGNAL_THRESHOLD_PCT above it.
+        in_buy_zone = -BUY_ZONE_BELOW_PIVOT_PCT <= pct_from_pivot <= BUY_SIGNAL_THRESHOLD_PCT
+
+        if risk.get("valid"):
+            options_play = build_options_play(
+                entry=risk["entry"], stop=risk["stop"], t1=risk.get("t1"),
+                t2=risk.get("t2"), price=price, cash_available=cash_available,
+            )
+
         if not risk.get("valid"):
             action = "SKIP"
             skip_reason = f"Position invalid: {risk.get('reason')}"
         elif pattern.get("extended"):
             action = "ADD_TO_WATCHLIST"
             skip_reason = "Extended >5% above pivot — do not chase"
-        elif 0 <= pct_from_pivot <= BUY_SIGNAL_THRESHOLD_PCT:
+        elif in_buy_zone:
             gate_fail = []
             if not risk.get("meets_min_rr"):
-                gate_fail.append(f"R:R {risk.get('rr_t1')} < 2.0")
-            if not volume_ok:
+                gate_fail.append(f"R:R {risk.get('rr_t1')} < {MIN_RR}")
+            if REQUIRE_VOLUME_CONFIRMATION and not volume_ok:
                 gate_fail.append("no volume confirmation")
-            if not near_high:
-                gate_fail.append("not within 25% of 52w high")
+            if REQUIRE_NEAR_52W_HIGH and not near_high:
+                gate_fail.append(f"not within {int(NEAR_52W_HIGH_PCT*100)}% of 52w high")
             if gate_fail:
                 action = "ADD_TO_WATCHLIST"
-                skip_reason = "At pivot but " + "; ".join(gate_fail)
+                skip_reason = "In buy zone but " + "; ".join(gate_fail)
             else:
                 action = "PLACE_ORDER"
-        elif -0.05 <= pct_from_pivot < 0:
+        elif pct_from_pivot < -BUY_ZONE_BELOW_PIVOT_PCT:
             action = "ADD_TO_WATCHLIST"
-            skip_reason = "Approaching pivot (within 5% below)"
+            skip_reason = "Below buy zone — still building base"
         elif pattern["pattern"] not in ("NO SETUP", "DATA_UNAVAILABLE", "INSUFFICIENT_DATA", "ERROR"):
             action = "ADD_TO_WATCHLIST"
             skip_reason = "Valid pattern, still building base"
@@ -135,6 +163,7 @@ def evaluate_ticker(
         "pattern": pattern,
         "rs": rs,
         "risk": risk,
+        "options_play": options_play,
         "agent_action": action,
         "skip_reason": skip_reason,
         "fundamentals_unverified": True,

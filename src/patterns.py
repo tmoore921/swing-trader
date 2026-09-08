@@ -7,7 +7,11 @@ Priority order (highest conviction first): VCP > Bull Flag > Flat Base > Pullbac
 
 import pandas as pd
 import numpy as np
-from config import EXTENDED_ABOVE_PIVOT_PCT, BUY_SIGNAL_THRESHOLD_PCT
+from config import (
+    EXTENDED_ABOVE_PIVOT_PCT,
+    BUY_SIGNAL_THRESHOLD_PCT,
+    VOLUME_EXPANSION_RATIO,
+)
 from src.data_provider import get_history
 
 PATTERN_PRIORITY = ["VCP", "Bull Flag", "Flat Base", "Pullback to 20 EMA"]
@@ -94,17 +98,30 @@ def _check_vcp(close, high, low, volume, ema20) -> dict:
         return {"detected": False}
 
     contractions = sum(1 for i in range(len(weekly_ranges) - 1) if weekly_ranges[i] < weekly_ranges[i + 1])
-    vol_contracting = all(
-        weekly_vols[i] < weekly_vols[i + 1] for i in range(min(2, len(weekly_vols) - 1))
-    )
     detected = contractions >= 2 and weekly_ranges[0] < weekly_ranges[1]
+
+    # weekly_vols[0] is the CURRENT week. The old test demanded strictly
+    # contracting volume across the two most recent week-pairs, i.e. volume had
+    # to still be drying up right now — the opposite of what a breakout looks
+    # like, since volume should EXPAND as price clears the pivot. It therefore
+    # vetoed setups at exactly the moment they became buyable. A VCP is
+    # confirmed by either signature: dry-up *through the base*, or expansion on
+    # the breakout week.
+    base_dryup = len(weekly_vols) >= 3 and weekly_vols[1] < weekly_vols[2]
+    base_avg = (
+        sum(weekly_vols[1:]) / len(weekly_vols[1:]) if len(weekly_vols) > 1 else weekly_vols[0]
+    )
+    breakout_expansion = base_avg > 0 and weekly_vols[0] > base_avg * VOLUME_EXPANSION_RATIO
 
     return {
         "detected": detected,
         "pivot": float(high.iloc[-5:].max()) if detected else None,
         "contractions": contractions,
         "weekly_ranges": [round(r, 1) for r in weekly_ranges],
-        "volume_ok": vol_contracting,
+        "volume_ok": bool(base_dryup or breakout_expansion),
+        "volume_signature": (
+            "breakout_expansion" if breakout_expansion else "base_dryup" if base_dryup else "none"
+        ),
     }
 
 

@@ -9,6 +9,10 @@ from config import (
     MAX_POSITION_PCT,
     ATR_PERIOD,
     ATR_STOP_MULTIPLIER,
+    SWING_PIVOT_BARS,
+    RESISTANCE_LOOKBACK_BARS,
+    MIN_RESISTANCE_DISTANCE_PCT,
+    MEASURED_MOVE_R,
 )
 from src.data_provider import get_history
 
@@ -117,27 +121,61 @@ def atr_stop(entry: float, df: pd.DataFrame, multiplier: float = ATR_STOP_MULTIP
     return round(stop, 2) if stop > 0 else None
 
 
+def swing_highs(high: pd.Series, k: int = SWING_PIVOT_BARS) -> list[float]:
+    """Fractal swing-high pivots: bars that are the highest of the k bars either side.
+
+    A *single* daily high is not resistance — every uptrending stock prints one a
+    couple of percent above any given price. Real overhead supply sits at turning
+    points, where price actually reversed. Requiring a bar to dominate its k
+    neighbours on both sides isolates those.
+    """
+    vals = high.values
+    n = len(vals)
+    out = []
+    for i in range(k, n - k):
+        # Strict on the left, inclusive on the right: the standard fractal
+        # tie-break. On a flat plateau this marks the plateau's first bar once
+        # instead of flagging every bar in it as a separate pivot.
+        if vals[i] > vals[i - k : i].max() and vals[i] >= vals[i + 1 : i + k + 1].max():
+            out.append(float(vals[i]))
+    return out
+
+
 def estimate_targets(
     ticker: str, entry: float, stop: float, df: pd.DataFrame | None = None
 ) -> tuple[float | None, float | None]:
-    """Estimate T1/T2 from recent swing highs as a starting point for agent review."""
+    """Estimate T1/T2 from real swing-high resistance above the entry.
+
+    T1 is the nearest swing-high pivot that sits far enough above entry to be
+    genuine resistance (`MIN_RESISTANCE_DISTANCE_PCT`) rather than breakout noise
+    a Stage 2 move clears on the way through. When nothing overhead qualifies —
+    the common case for a breakout to new highs, where there is no supply left —
+    T1 falls back to a measured move of `MEASURED_MOVE_R` times the risk.
+
+    The previous implementation took the *lowest daily high* more than 2% above
+    entry over 60 bars. For a stock coiling under its pivot that is ~2-4% away,
+    which produced R:R values of 0.16-0.49 and blocked essentially every order,
+    while true new-high breakouts hit the fallback and scored exactly 2.0. The
+    gate was passing only when the target was unknown.
+    """
+    risk = entry - stop
     try:
         hist = df if df is not None else get_history(ticker, outputsize=300)
         if hist is None:
             raise ValueError("no data")
         high = hist["High"].astype(float)
 
-        # T1: nearest significant resistance above entry
-        recent_highs = high.iloc[-60:].values
-        above = sorted([h for h in recent_highs if h > entry * 1.02])
-        t1 = float(above[0]) if above else round(entry + (entry - stop) * 2, 2)
+        # T1: nearest genuine swing-high resistance meaningfully above entry.
+        pivots = swing_highs(high.iloc[-RESISTANCE_LOOKBACK_BARS:])
+        floor = entry * (1 + MIN_RESISTANCE_DISTANCE_PCT)
+        above = sorted(h for h in pivots if h >= floor)
+        t1 = float(above[0]) if above else entry + risk * MEASURED_MOVE_R
 
-        # T2: 52-week high area as major resistance
-        t2 = round(float(high.iloc[-252:].max()), 2)
+        # T2: 52-week high area as the next major resistance.
+        t2 = float(high.iloc[-252:].max())
         if t2 <= t1:
-            t2 = round(t1 + (t1 - entry), 2)
+            t2 = t1 + (t1 - entry)
 
-        return round(t1, 2), t2
+        return round(t1, 2), round(t2, 2)
     except Exception:
-        risk = entry - stop
-        return round(entry + risk * 2, 2), round(entry + risk * 3, 2)
+        return round(entry + risk * MEASURED_MOVE_R, 2), round(entry + risk * (MEASURED_MOVE_R + 1), 2)

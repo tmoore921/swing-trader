@@ -37,6 +37,8 @@ def _build_agent_instructions(regime: dict, candidates: list[dict]) -> dict:
     skip = [c for c in candidates if c.get("agent_action") == "SKIP"]
     no_data = [c for c in candidates if c.get("agent_action") == "VERIFY_VIA_WEBSEARCH"]
 
+    placeable = [c for c in orders if c.get("risk") and c["risk"].get("valid")]
+
     return {
         "skip_orders": False,
         "verify_fundamentals_before_ordering": True,
@@ -55,12 +57,24 @@ def _build_agent_instructions(regime: dict, candidates: list[dict]) -> dict:
                 "rs_score": (c.get("rs") or {}).get("rs_score"),
                 "rs_rank": (c.get("rs") or {}).get("rs_rank"),
                 "order_type": "limit_buy",
+                "options_alternative": c.get("options_play"),
                 "note": "REQUIRED: after fill, immediately place the stop_loss_price as a separate stop order. "
                         "Verify fundamentals + earnings (skip if earnings within 5 trading days) via web search, "
-                        "then review_equity_order BEFORE place_equity_order.",
+                        "then review_equity_order BEFORE place_equity_order. "
+                        "options_alternative (if present) is a defined-risk way to express the same setup — "
+                        "use shares OR the call for a given name, not both.",
             }
-            for c in orders
-            if c.get("risk") and c["risk"].get("valid")
+            for c in placeable
+        ],
+        "options_candidates": [
+            {
+                "ticker": c["ticker"],
+                "from_watchlist": c.get("from_watchlist", False),
+                "rs_rank": (c.get("rs") or {}).get("rs_rank"),
+                "options_play": c.get("options_play"),
+            }
+            for c in placeable
+            if c.get("options_play")
         ],
         "add_to_watchlist": [c["ticker"] for c in watchlist_add],
         "skip": [{"ticker": c["ticker"], "reason": c.get("skip_reason", "")} for c in skip],
@@ -111,6 +125,18 @@ def print_briefing(data: dict) -> None:
             tag = "watchlist" if o.get("from_watchlist") else "new"
             print(f"  BUY {o['shares']} {o['ticker']} limit @ ${o['limit_buy_price']} | Stop: ${o['stop_loss_price']} | TP: ${o['take_profit_price']} ({tag})")
         print(f"WATCHLIST TO ADD: {', '.join(watchlist) if watchlist else 'none'}")
+
+        options = instr.get("options_candidates", [])
+        if options:
+            print(f"\nOPTIONS PLAYS (agent prices the live chain): {len(options)}")
+            for o in options:
+                op = o.get("options_play", {})
+                exp = op.get("expiry", {})
+                strike = op.get("strike", {})
+                print(f"  {o['ticker']}: {op.get('strategy')} ~{exp.get('target_dte')}DTE "
+                      f"@ ${strike.get('target_strike')} (Δ~{strike.get('target_delta')}) "
+                      f"| max premium ${op.get('max_premium_dollars')} "
+                      f"| exit on stock stop ${op.get('underlying_stop_ref')}")
 
     pf = data.get("portfolio")
     if pf:
