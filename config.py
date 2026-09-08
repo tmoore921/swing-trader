@@ -81,6 +81,17 @@ OPTIONS_TARGET_DELTA = 0.65      # slightly-ITM directional call: leverage w/ le
 OPTIONS_MAX_PREMIUM_PCT = 0.15   # max premium outlay per position as % of account (defined risk)
 OPTIONS_MAX_SPREAD_PCT = 0.15    # agent liquidity gate: skip if bid/ask spread > 15% of mid
 
+# --- Options affordability pre-filter --------------------------------------
+# A contract is 100 shares, so its cost is ~(premium per share × 100). A
+# slightly-ITM 30-60 DTE call typically runs a few percent of spot: MRK at ~$148
+# quoted $6.20/share on 2026-09-08 = 4.2% of spot = $620 per contract, against a
+# $75 budget. At this account size that is the norm, not the exception — so
+# estimate the cost here and mark the blueprint rather than making the agent
+# fetch a chain per ticker only to skip it. Raise OPTIONS_MAX_PREMIUM_PCT or
+# trade cheaper underlyings to make calls reachable.
+OPTIONS_TYPICAL_PREMIUM_PCT_OF_SPOT = 0.05
+OPTIONS_CONTRACT_MULTIPLIER = 100
+
 # ATR-based stops
 ATR_PERIOD = 14
 ATR_STOP_MULTIPLIER = 2.0         # stop = entry - ATR_STOP_MULTIPLIER * ATR(14)

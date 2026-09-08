@@ -28,6 +28,8 @@ from config import (
     OPTIONS_TARGET_DELTA,
     OPTIONS_MAX_PREMIUM_PCT,
     OPTIONS_MAX_SPREAD_PCT,
+    OPTIONS_TYPICAL_PREMIUM_PCT_OF_SPOT,
+    OPTIONS_CONTRACT_MULTIPLIER,
 )
 
 
@@ -58,6 +60,17 @@ def build_options_play(
     if premium_budget <= 0:
         return None
 
+    # Rough cost of one contract before the agent touches a live chain. A
+    # contract controls OPTIONS_CONTRACT_MULTIPLIER shares, so even a modest
+    # per-share premium on a high-priced leader dwarfs a small account's budget.
+    est_contract_cost = round(
+        price * OPTIONS_TYPICAL_PREMIUM_PCT_OF_SPOT * OPTIONS_CONTRACT_MULTIPLIER, 2
+    )
+    likely_affordable = est_contract_cost <= premium_budget
+    max_affordable_spot = round(
+        premium_budget / (OPTIONS_TYPICAL_PREMIUM_PCT_OF_SPOT * OPTIONS_CONTRACT_MULTIPLIER), 2
+    )
+
     return {
         "strategy": "long_call",
         "direction": "bullish",
@@ -80,13 +93,29 @@ def build_options_play(
         },
         "max_premium_dollars": round(premium_budget, 2),
         "max_premium_pct_of_account": OPTIONS_MAX_PREMIUM_PCT,
+        "affordability": {
+            "estimated_contract_cost": est_contract_cost,
+            "likely_affordable": likely_affordable,
+            "max_affordable_underlying_price": max_affordable_spot,
+            "note": (
+                f"One contract is ~{OPTIONS_CONTRACT_MULTIPLIER} shares. At a "
+                f"${round(premium_budget, 2)} budget this account can realistically only "
+                f"reach underlyings under ~${max_affordable_spot}. "
+                + (
+                    "This one is within reach — still confirm against the live chain."
+                    if likely_affordable
+                    else f"${round(price, 2)} is very likely out of reach; expect to skip it. "
+                    "Check the chain only if you have budget to spare."
+                )
+            ),
+        },
         "sizing_rule": (
             "contracts = floor(max_premium_dollars / (ask * 100)); place 0 orders "
             "if even 1 contract exceeds max_premium_dollars."
         ),
         "defined_risk_note": (
             "Max loss = total premium paid. Count that full premium toward "
-            "EXISTING_RISK / the 6% portfolio-heat cap on subsequent runs."
+            "EXISTING_RISK / the portfolio-heat cap on subsequent runs."
         ),
         "exit_rule": (
             f"Close the call if the underlying breaks its stop ${round(stop, 2)} "
